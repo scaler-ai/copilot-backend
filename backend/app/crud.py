@@ -7,6 +7,17 @@ from app.core.security import get_password_hash, verify_password
 from app.models import Item, ItemCreate, User, UserCreate, UserUpdate
 
 
+def get_user(*, session: Session, user_id: str | uuid.UUID) -> User | None:
+    """Get user by ID."""
+    if isinstance(user_id, str):
+        try:
+            user_id = uuid.UUID(user_id)
+        except ValueError:
+            return None
+    statement = select(User).where(User.id == user_id)
+    return session.execute(statement).scalars().first()
+
+
 def create_user(*, session: Session, user_create: UserCreate) -> User:
     db_obj = User.model_validate(
         user_create, update={"hashed_password": get_password_hash(user_create.password)}
@@ -33,7 +44,8 @@ def update_user(*, session: Session, db_user: User, user_in: UserUpdate) -> Any:
 
 def get_user_by_email(*, session: Session, email: str) -> User | None:
     statement = select(User).where(User.email == email)
-    session_user = session.exec(statement).first()
+    # Use execute() instead of exec() for SQLAlchemy compatibility
+    session_user = session.execute(statement).scalars().first()
     return session_user
 
 

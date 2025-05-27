@@ -1,0 +1,71 @@
+# Import all models here so they're properly registered with SQLAlchemy
+from sqlmodel import SQLModel
+
+from app.models.base import BaseDBModel, TimestampMixin
+from app.models.user import (
+    UserRole,
+    OAuthProvider,
+    UserBase,
+    UserCreate,
+    UserUpdate,
+    UserInDB as User,
+    UserPublic,
+    UserLogin,
+    TokenPayload,
+    TokenPair,
+    RefreshTokenBase,
+    RefreshToken,
+    RefreshTokenCreate,
+    RefreshTokenPublic,
+    PasswordResetRequest,
+    PasswordResetConfirm,
+    NewPassword,
+    UpdatePassword,
+    UserRegister,
+    UserUpdateMe,
+    UsersPublic,
+)
+
+from app.models.item import (
+    Item,
+    ItemBase,
+    ItemCreate,
+    ItemUpdate,
+    ItemPublic,
+    ItemsPublic,
+    Message,
+)
+
+# This ensures that SQLModel knows about all models for migrations
+__all__ = [
+    'BaseDBModel',
+    'TimestampMixin',
+    'UserRole',
+    'OAuthProvider',
+    'UserBase',
+    'UserCreate',
+    'UserUpdate',
+    'User',
+    'UserPublic',
+    'UserLogin',
+    'TokenPayload',
+    'TokenPair',
+    'RefreshTokenBase',
+    'RefreshToken',
+    'RefreshTokenCreate',
+    'RefreshTokenPublic',
+    'PasswordResetRequest',
+    'PasswordResetConfirm',
+    'NewPassword',
+    'UpdatePassword',
+    'UserRegister',
+    'UserUpdateMe',
+    'UsersPublic',
+    'Item',
+    'ItemBase',
+    'ItemCreate',
+    'ItemUpdate',
+    'ItemPublic',
+    'ItemsPublic',
+    'Message',
+]
