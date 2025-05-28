@@ -6,6 +6,7 @@ tools, sessions, and protocol interactions.
 """
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
@@ -40,17 +41,16 @@ async def read_mcp_servers(
     """
     repo = MCPServerRepository(session)
     
-    if current_user.is_superuser:
-        # Superusers can see all servers
-        servers = await repo.get_multi(skip=skip, limit=limit)
-        count = await repo.count()
+    if getattr(current_user, 'is_superuser', False):
+        # Superusers can see all servers - use search with empty query for all
+        servers = await repo.search_servers(query="", skip=skip, limit=limit)
+        count = len(servers)  # Temporary - should implement proper counting
     else:
         # Regular users see only their own servers
         servers = await repo.get_by_owner(owner_id=current_user.id, skip=skip, limit=limit)
-        # TODO: Add count method for owner-specific queries
         count = len(servers)  # Temporary - should implement proper counting
     
-    return MCPServersPublic(data=servers, count=count)
+    return MCPServersPublic(data=[MCPServerPublic(**server.model_dump()) for server in servers], count=count)
 
 
 @router.get("/servers/public", response_model=MCPServersPublic)
@@ -67,7 +67,7 @@ async def read_public_mcp_servers(
     repo = MCPServerRepository(session)
     servers = await repo.get_public_servers(skip=skip, limit=limit)
     
-    return MCPServersPublic(data=servers, count=len(servers))
+    return MCPServersPublic(data=[MCPServerPublic(**server.model_dump()) for server in servers], count=len(servers))
 
 
 @router.get("/servers/search", response_model=MCPServersPublic)
@@ -85,7 +85,7 @@ async def search_mcp_servers(
     """
     repo = MCPServerRepository(session)
     
-    if current_user.is_superuser:
+    if getattr(current_user, 'is_superuser', False):
         # Superusers can search all servers
         servers = await repo.search_servers(
             query=q, 
@@ -101,7 +101,7 @@ async def search_mcp_servers(
             limit=limit
         )
     
-    return MCPServersPublic(data=servers, count=len(servers))
+    return MCPServersPublic(data=[MCPServerPublic(**server.model_dump()) for server in servers], count=len(servers))
 
 
 @router.post("/servers", response_model=MCPServerPublic)
@@ -151,7 +151,7 @@ async def read_mcp_server(
         )
     
     # Check access permissions
-    if not current_user.is_superuser and server.owner_id != current_user.id:
+    if not getattr(current_user, 'is_superuser', False) and server.owner_id != current_user.id:
         # Allow access to public servers
         if not server.is_public:
             raise HTTPException(
@@ -183,7 +183,7 @@ async def update_mcp_server(
         )
     
     # Check ownership permissions
-    if not current_user.is_superuser and server.owner_id != current_user.id:
+    if not getattr(current_user, 'is_superuser', False) and server.owner_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions to update this server"
@@ -225,7 +225,7 @@ async def delete_mcp_server(
         )
     
     # Check ownership permissions
-    if not current_user.is_superuser and server.owner_id != current_user.id:
+    if not getattr(current_user, 'is_superuser', False) and server.owner_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions to delete this server"
@@ -257,7 +257,7 @@ async def check_mcp_server_health(
         )
     
     # Check access permissions (owners and superusers can perform health checks)
-    if not current_user.is_superuser and server.owner_id != current_user.id:
+    if not getattr(current_user, 'is_superuser', False) and server.owner_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions to perform health check on this server"
@@ -268,10 +268,16 @@ async def check_mcp_server_health(
     
     # TODO: Implement actual health check logic
     # For now, return basic health check info
+    if updated_server is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update health check"
+        )
+    
     return MCPServerHealthCheck(
         server_id=server_id,
         status=updated_server.status,
-        last_check=updated_server.last_health_check,
+        last_check=updated_server.last_health_check or datetime.utcnow(),
         response_time_ms=None,  # TODO: Implement actual ping
         error=None,
         available_tools=None,  # TODO: Query actual tools
@@ -293,7 +299,7 @@ async def read_mcp_servers_by_status(
     Only superusers can filter by status across all servers.
     Regular users see their own servers with the specified status.
     """
-    if not current_user.is_superuser:
+    if not getattr(current_user, 'is_superuser', False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only superusers can filter servers by status"
@@ -306,4 +312,4 @@ async def read_mcp_servers_by_status(
         limit=limit
     )
     
-    return MCPServersPublic(data=servers, count=len(servers))
+    return MCPServersPublic(data=[MCPServerPublic(**server.model_dump()) for server in servers], count=len(servers))

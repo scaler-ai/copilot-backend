@@ -14,7 +14,7 @@ import asyncpg
 from sqlmodel import Session
 
 from app.core.config import settings
-from app.repositories.base import BaseRepository, JsonFieldMixin
+# from app.repositories.base import BaseRepository, JsonFieldMixin
 from app.schemas.mcp import (
     MCPServerCreate,
     MCPServerUpdate,
@@ -24,20 +24,34 @@ from app.schemas.mcp import (
 )
 
 
-class MCPServerRepository(BaseRepository[MCPServerInDB, MCPServerCreate, MCPServerUpdate], JsonFieldMixin):
+class MCPServerRepository:
     """Repository for MCP Server database operations."""
     
-    @property
-    def table_name(self) -> str:
-        return "mcp_servers"
+    def __init__(self, session: Session):
+        self.session = session
     
-    @property
-    def model_class(self):
-        return MCPServerInDB
+    async def _get_connection(self) -> asyncpg.Connection:
+        """Get a database connection."""
+        return await asyncpg.connect(
+            user=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD,
+            database=settings.POSTGRES_DB,
+            host=settings.POSTGRES_SERVER,
+            port=settings.POSTGRES_PORT,
+        )
     
-    @property
-    def json_fields(self) -> List[str]:
-        return ["connection_config", "allowed_users", "allowed_roles", "capabilities"]
+    def _parse_server_data(self, row: asyncpg.Record) -> MCPServerInDB:
+        """Parse a database row into an MCPServerInDB object."""
+        data = dict(row)
+        
+        # Parse JSON fields
+        json_fields = ["connection_config", "allowed_users", "allowed_roles", "capabilities"]
+        for field in json_fields:
+            if data.get(field) is not None:
+                if isinstance(data[field], str):
+                    data[field] = json.loads(data[field])
+        
+        return MCPServerInDB(**data)
 
     async def create(self, *, server_create: MCPServerCreate, owner_id: uuid.UUID) -> MCPServerInDB:
         """Create a new MCP server."""
@@ -233,22 +247,36 @@ class MCPServerRepository(BaseRepository[MCPServerInDB, MCPServerCreate, MCPServ
             await conn.close()
 
     async def search_servers(self, *, query: str, owner_id: Optional[uuid.UUID] = None, skip: int = 0, limit: int = 100) -> List[MCPServerInDB]:
-        """Search MCP servers by name or description."""
+        """Search MCP servers by name or description. Empty query returns all servers."""
         conn = await self._get_connection()
         try:
-            where_clause = "WHERE (name ILIKE $1 OR description ILIKE $1)"
-            params: List[Any] = [f"%{query}%"]
-            
-            if owner_id:
-                where_clause += " AND owner_id = $2"
-                params.append(owner_id)
-                offset_param = "$3"
-                limit_param = "$4"
+            if query.strip() == "":
+                # Empty query - return all servers
+                if owner_id:
+                    where_clause = "WHERE owner_id = $1"
+                    params = [owner_id, skip, limit]
+                    offset_param = "$2"
+                    limit_param = "$3"
+                else:
+                    where_clause = ""
+                    params = [skip, limit]
+                    offset_param = "$1"
+                    limit_param = "$2"
             else:
-                offset_param = "$2"
-                limit_param = "$3"
-            
-            params.extend([skip, limit])
+                # Search query
+                where_clause = "WHERE (name ILIKE $1 OR description ILIKE $1)"
+                params: List[Any] = [f"%{query}%"]
+                
+                if owner_id:
+                    where_clause += " AND owner_id = $2"
+                    params.append(owner_id)
+                    offset_param = "$3"
+                    limit_param = "$4"
+                else:
+                    offset_param = "$2"
+                    limit_param = "$3"
+                
+                params.extend([skip, limit])
             
             sql = f"""
                 SELECT * FROM mcp_servers 

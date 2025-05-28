@@ -145,9 +145,18 @@ class UserInDB(UserBase, BaseDBModel, table=True):
     )
 
 
-class UserPublic(UserBase):
+class UserPublic(SQLModel):
     """Public user schema (excludes sensitive data)."""
     id: UUID
+    email: EmailStr
+    is_active: bool = True
+    is_verified: bool = False
+    email_verified: bool = False
+    full_name: Optional[str] = None
+    role: UserRole = UserRole.USER
+    last_login: Optional[datetime] = None
+    sso_provider: Optional[OAuthProvider] = None
+    sso_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     

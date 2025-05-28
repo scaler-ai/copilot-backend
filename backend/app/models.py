@@ -66,8 +66,16 @@ class User(UserBase, table=True):
 
 
 # Properties to return via API, id is always required
-class UserPublic(UserBase):
+class UserPublic(SQLModel):
     id: uuid.UUID
+    email: EmailStr
+    is_active: bool = True
+    is_superuser: bool = False
+    is_verified: bool = False
+    full_name: str | None = None
+    sso_provider: str | None = None
+    sso_sub: str | None = None
+    last_login: datetime | None = None
 
 
 class UsersPublic(SQLModel):
