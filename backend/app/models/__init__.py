@@ -2,6 +2,8 @@
 from sqlmodel import SQLModel
 
 from app.models.base import BaseDBModel, TimestampMixin
+from app.models.oauth import OAuthState, OAuthStateCreate
+from app.models.token import Token, TokenPayload, TokenPair
 from app.models.user import (
     UserRole,
     OAuthProvider,
@@ -42,6 +44,11 @@ __all__ = [
     'TimestampMixin',
     'UserRole',
     'OAuthProvider',
+    'OAuthState',
+    'OAuthStateCreate',
+    'Token',
+    'TokenPayload',
+    'TokenPair',
     'UserBase',
     'UserCreate',
     'UserUpdate',

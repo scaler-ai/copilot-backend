@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+# JWT algorithm for token encoding/decoding
+ALGORITHM = "HS256"
+
 # OAuth2 scheme for token authentication
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/auth/login",
