@@ -1,8 +1,8 @@
 from collections.abc import Generator
-from typing import Annotated
+from typing import Annotated, Optional
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, WebSocket, Query
 from fastapi.security import OAuth2PasswordBearer
 from jwt.exceptions import InvalidTokenError
 from pydantic import ValidationError
@@ -57,3 +57,31 @@ def get_current_active_superuser(current_user: CurrentUser) -> User:
             status_code=403, detail="The user doesn't have enough privileges"
         )
     return current_user
+
+
+async def get_current_user_ws(
+    websocket: WebSocket,
+    session: Session,
+    token: str = Query(None)
+) -> Optional[User]:
+    """
+    Get current user from WebSocket connection.
+    
+    Token can be passed as query parameter: ws://localhost/ws?token=xxx
+    """
+    if not token:
+        return None
+    
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
+        )
+        token_data = TokenPayload(**payload)
+    except (InvalidTokenError, ValidationError):
+        return None
+    
+    user = session.get(User, token_data.sub)
+    if not user or not user.is_active:
+        return None
+    
+    return user

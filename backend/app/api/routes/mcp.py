@@ -23,8 +23,17 @@ from app.schemas.mcp import (
     MCPServerHealthCheck,
 )
 from app.models import Message
+from app.api.routes import mcp_ws, mcp_test
 
 router = APIRouter(prefix="/mcp", tags=["mcp"])
+
+# Include WebSocket routes
+router.include_router(mcp_ws.router)
+
+# Include test page route (only in development)
+from app.core.config import settings
+if settings.ENVIRONMENT == "local":
+    router.include_router(mcp_test.router)
 
 
 @router.get("/servers", response_model=MCPServersPublic)
