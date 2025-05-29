@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Dict, Optional, Any
 
+import httpx
 from fastapi import WebSocket, WebSocketDisconnect, Depends, HTTPException, status
 from sqlmodel import Session
 
@@ -24,6 +25,7 @@ from app.schemas.mcp import (
     MCPMessageRole,
     MCPSessionStatus,
     MCPToolExecutionStatus,
+    MCPServerType,
 )
 from app.core.logging import logger
 
@@ -34,8 +36,8 @@ class ConnectionManager:
     def __init__(self):
         # Active connections: {session_id: {"websocket": WebSocket, "user_id": UUID}}
         self.active_connections: Dict[str, Dict[str, Any]] = {}
-        # MCP server connections: {server_id: asyncio.subprocess}
-        self.mcp_processes: Dict[str, Any] = {}
+        # MCP server connections: {server_id: {"type": "stdio|http", "process": subprocess|None, "config": dict}}
+        self.mcp_servers: Dict[str, Any] = {}
     
     async def connect(self, websocket: WebSocket, session_id: str, user_id: uuid.UUID):
         """Accept and register a new WebSocket connection."""
@@ -65,106 +67,218 @@ class ConnectionManager:
             if conn["user_id"] == user_id:
                 await self.send_message(session_id, message)
     
-    async def start_mcp_server(self, server_id: str, connection_config: dict) -> bool:
-        """Start an MCP server process based on its configuration."""
+    async def start_mcp_server(self, server_id: str, server_type: str, connection_config: dict) -> bool:
+        """Start an MCP server based on its type and configuration."""
         try:
-            if server_id in self.mcp_processes:
+            if server_id in self.mcp_servers:
                 logger.warning(f"MCP server already running: {server_id}")
                 return True
             
-            # Extract command from connection config
-            command = connection_config.get("command", [])
-            args = connection_config.get("args", [])
-            env = connection_config.get("env", {})
+            logger.info(f"Starting MCP server {server_id} (type: {server_type})")
             
-            # Handle command as string or list
-            if isinstance(command, str):
-                command = [command]
-            if isinstance(args, str):
-                args = [args]
-            
-            if not command:
-                logger.error(f"No command specified for MCP server: {server_id}")
+            if server_type == MCPServerType.STDIO:
+                return await self._start_stdio_server(server_id, connection_config)
+            elif server_type == MCPServerType.HTTP:
+                return await self._start_http_server(server_id, connection_config)
+            else:
+                logger.error(f"Unsupported server type: {server_type}")
                 return False
-            
-            # Log the command being executed
-            logger.info(f"Starting MCP server {server_id}")
-            logger.info(f"Command: {command}")
-            logger.info(f"Args: {args}")
-            logger.info(f"Full command: {command + args}")
-            
-            # Start the MCP server process
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                *args,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, **env}  # Include current environment
-            )
-            
-            # Check if process started successfully
-            try:
-                # Wait a bit to see if process exits immediately
-                await asyncio.wait_for(process.wait(), timeout=0.5)
-                # If we get here, process exited
-                stderr = await process.stderr.read()
-                logger.error(f"MCP server {server_id} exited immediately")
-                logger.error(f"Exit code: {process.returncode}")
-                logger.error(f"Stderr: {stderr.decode()}")
-                return False
-            except asyncio.TimeoutError:
-                # Process is still running, which is good
-                pass
-            
-            self.mcp_processes[server_id] = {
-                "process": process,
-                "started_at": datetime.utcnow()
-            }
-            
-            logger.info(f"Started MCP server successfully: {server_id}")
-            return True
-            
+                
         except Exception as e:
             logger.error(f"Failed to start MCP server {server_id}: {str(e)}")
             logger.error(f"Exception type: {type(e).__name__}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return False
+
+    async def _start_stdio_server(self, server_id: str, connection_config: dict) -> bool:
+        """Start a STDIO MCP server process."""
+        # Extract command from connection config
+        command = connection_config.get("command", [])
+        args = connection_config.get("args", [])
+        env = connection_config.get("env", {})
+        
+        # Handle command as string or list
+        if isinstance(command, str):
+            command = [command]
+        if isinstance(args, str):
+            args = [args]
+        
+        if not command:
+            logger.error(f"No command specified for STDIO MCP server: {server_id}")
+            return False
+        
+        # Log the command being executed
+        logger.info(f"Command: {command}")
+        logger.info(f"Args: {args}")
+        logger.info(f"Full command: {command + args}")
+        
+        # Start the MCP server process
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, **env}  # Include current environment
+        )
+        
+        # Check if process started successfully
+        try:
+            # Wait a bit to see if process exits immediately
+            await asyncio.wait_for(process.wait(), timeout=0.5)
+            # If we get here, process exited
+            stderr = await process.stderr.read()
+            logger.error(f"STDIO MCP server {server_id} exited immediately")
+            logger.error(f"Exit code: {process.returncode}")
+            logger.error(f"Stderr: {stderr.decode()}")
+            return False
+        except asyncio.TimeoutError:
+            # Process is still running, which is good
+            pass
+        
+        self.mcp_servers[server_id] = {
+            "type": "stdio",
+            "process": process,
+            "config": connection_config,
+            "started_at": datetime.utcnow()
+        }
+        
+        logger.info(f"Started STDIO MCP server successfully: {server_id}")
+        return True
+
+    async def _start_http_server(self, server_id: str, connection_config: dict) -> bool:
+        """Register an HTTP MCP server (no process to start)."""
+        url = connection_config.get("url")
+        if not url:
+            logger.error(f"No URL specified for HTTP MCP server: {server_id}")
+            return False
+        
+        # Test connectivity to the HTTP server
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                test_request = {
+                    "jsonrpc": "2.0",
+                    "method": "initialize",
+                    "params": {},
+                    "id": 1
+                }
+                
+                headers = {"Content-Type": "application/json"}
+                
+                # Add authentication if provided
+                auth_config = connection_config.get("auth", {})
+                if auth_config:
+                    if auth_config.get("type") == "api_key":
+                        headers[auth_config.get("key_name", "X-API-Key")] = auth_config.get("api_key")
+                    elif auth_config.get("type") == "bearer":
+                        headers["Authorization"] = f"Bearer {auth_config.get('token')}"
+                    elif auth_config.get("type") == "basic":
+                        import base64
+                        creds = f"{auth_config.get('username')}:{auth_config.get('password')}"
+                        encoded = base64.b64encode(creds.encode()).decode()
+                        headers["Authorization"] = f"Basic {encoded}"
+                
+                response = await client.post(url, json=test_request, headers=headers)
+                response.raise_for_status()
+                
+                result = response.json()
+                if result.get("result"):
+                    logger.info(f"HTTP MCP server {server_id} is accessible")
+                    
+                    self.mcp_servers[server_id] = {
+                        "type": "http",
+                        "process": None,
+                        "config": connection_config,
+                        "url": url,
+                        "auth": auth_config,
+                        "started_at": datetime.utcnow()
+                    }
+                    
+                    logger.info(f"Registered HTTP MCP server successfully: {server_id}")
+                    return True
+                else:
+                    logger.error(f"HTTP MCP server {server_id} returned error: {result.get('error')}")
+                    return False
+                    
+        except httpx.RequestError as e:
+            logger.error(f"Failed to connect to HTTP MCP server {server_id}: {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"Error testing HTTP MCP server {server_id}: {str(e)}")
+            return False
     
     async def stop_mcp_server(self, server_id: str):
-        """Stop an MCP server process."""
-        if server_id in self.mcp_processes:
-            process = self.mcp_processes[server_id]["process"]
-            process.terminate()
-            await process.wait()
-            del self.mcp_processes[server_id]
+        """Stop an MCP server."""
+        if server_id in self.mcp_servers:
+            server_info = self.mcp_servers[server_id]
+            if server_info["type"] == "stdio" and server_info["process"]:
+                process = server_info["process"]
+                process.terminate()
+                await process.wait()
+            del self.mcp_servers[server_id]
             logger.info(f"Stopped MCP server: {server_id}")
     
     async def send_to_mcp_server(self, server_id: str, message: dict) -> Optional[dict]:
         """Send a message to an MCP server and wait for response."""
-        if server_id not in self.mcp_processes:
+        if server_id not in self.mcp_servers:
             logger.error(f"MCP server not running: {server_id}")
             return None
         
+        server_info = self.mcp_servers[server_id]
+        
         try:
-            process = self.mcp_processes[server_id]["process"]
-            
-            # Send message to MCP server stdin
-            message_bytes = json.dumps(message).encode() + b'\n'
-            process.stdin.write(message_bytes)
-            await process.stdin.drain()
-            
-            # Read response from stdout
-            response_line = await process.stdout.readline()
-            if response_line:
-                return json.loads(response_line.decode())
-            
-            return None
-            
+            if server_info["type"] == "stdio":
+                return await self._send_to_stdio_server(server_info, message)
+            elif server_info["type"] == "http":
+                return await self._send_to_http_server(server_info, message)
+            else:
+                logger.error(f"Unknown server type: {server_info['type']}")
+                return None
+                
         except Exception as e:
             logger.error(f"Error communicating with MCP server {server_id}: {str(e)}")
             return None
+
+    async def _send_to_stdio_server(self, server_info: dict, message: dict) -> Optional[dict]:
+        """Send message to STDIO MCP server."""
+        process = server_info["process"]
+        
+        # Send message to MCP server stdin
+        message_bytes = json.dumps(message).encode() + b'\n'
+        process.stdin.write(message_bytes)
+        await process.stdin.drain()
+        
+        # Read response from stdout
+        response_line = await process.stdout.readline()
+        if response_line:
+            return json.loads(response_line.decode())
+        
+        return None
+
+    async def _send_to_http_server(self, server_info: dict, message: dict) -> Optional[dict]:
+        """Send message to HTTP MCP server."""
+        url = server_info["url"]
+        auth_config = server_info.get("auth", {})
+        
+        headers = {"Content-Type": "application/json"}
+        
+        # Add authentication if provided
+        if auth_config:
+            if auth_config.get("type") == "api_key":
+                headers[auth_config.get("key_name", "X-API-Key")] = auth_config.get("api_key")
+            elif auth_config.get("type") == "bearer":
+                headers["Authorization"] = f"Bearer {auth_config.get('token')}"
+            elif auth_config.get("type") == "basic":
+                import base64
+                creds = f"{auth_config.get('username')}:{auth_config.get('password')}"
+                encoded = base64.b64encode(creds.encode()).decode()
+                headers["Authorization"] = f"Basic {encoded}"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=message, headers=headers)
+            response.raise_for_status()
+            return response.json()
 
 
 # Global connection manager
@@ -224,7 +338,7 @@ async def websocket_endpoint(
     await manager.connect(websocket, session_id, user.id)
     
     # Start MCP server if not already running
-    if not await manager.start_mcp_server(str(server.id), server.connection_config):
+    if not await manager.start_mcp_server(str(server.id), server.server_type, server.connection_config):
         await websocket.send_json({
             "type": "error",
             "error": {"message": "Failed to start MCP server"}
