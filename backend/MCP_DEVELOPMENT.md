@@ -106,6 +106,35 @@ alembic upgrade head
 - Tool execution visualization
 - Integration with backend MCP APIs
 
+**Quick Start Guide:**
+1. **Start Backend:**
+   ```bash
+   cd copilot-backend/backend
+   uv sync
+   source .venv/bin/activate
+   fastapi run --reload app/main.py
+   ```
+
+2. **Start Test MCP Servers:**
+   ```bash
+   # Calculator Server (STDIO)
+   cd copilot-backend/backend
+   python examples/calculator_server.py
+
+   # HTTP Test Server
+   cd test-mcp-servers
+   node http_server.js
+   ```
+
+3. **Register MCP Servers in Database:**
+   - Use the API endpoints at `/api/v1/mcp/servers`
+   - Requires authentication (JWT token)
+   - Or use the test client at http://localhost:8000/api/v1/mcp/test
+
+4. **Test WebSocket Connection:**
+   - Create a session via API
+   - Connect to WebSocket at `/api/v1/mcp/ws/mcp/{server_id}/{session_id}?token={jwt_token}`
+
 ### Phase 6: Backend Enhancement Features
 
 #### 6.1 Tool Execution & Audit System
