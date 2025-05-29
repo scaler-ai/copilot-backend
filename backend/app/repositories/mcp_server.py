@@ -215,15 +215,22 @@ class MCPServerRepository:
         finally:
             await conn.close()
 
-    async def update_health_check(self, *, server_id: uuid.UUID) -> Optional[MCPServerInDB]:
-        """Update the last health check timestamp for a server."""
+    async def update_health_check(self, *, server_id: uuid.UUID, status: Optional[MCPServerStatus] = None) -> Optional[MCPServerInDB]:
+        """Update the last health check timestamp and optionally the status for a server."""
         conn = await self._get_connection()
         try:
-            await conn.execute("""
-                UPDATE mcp_servers 
-                SET last_health_check = NOW(), updated_at = NOW()
-                WHERE id = $1
-            """, server_id)
+            if status is not None:
+                await conn.execute("""
+                    UPDATE mcp_servers 
+                    SET last_health_check = NOW(), updated_at = NOW(), status = $2
+                    WHERE id = $1
+                """, server_id, status.value)
+            else:
+                await conn.execute("""
+                    UPDATE mcp_servers 
+                    SET last_health_check = NOW(), updated_at = NOW()
+                    WHERE id = $1
+                """, server_id)
             
             return await self.get_by_id(server_id=server_id)
             

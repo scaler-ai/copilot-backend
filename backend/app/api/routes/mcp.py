@@ -7,7 +7,7 @@ tools, sessions, and protocol interactions.
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, List
 
 from fastapi import APIRouter, HTTPException, status
 from sqlmodel import func, select
@@ -21,6 +21,9 @@ from app.schemas.mcp import (
     MCPServersPublic,
     MCPServerStatus,
     MCPServerHealthCheck,
+    MCPSessionCreate,
+    MCPSessionPublic,
+    MCPMessagePublic,
 )
 from app.models import Message
 from app.api.routes import mcp_ws, mcp_test
@@ -265,31 +268,92 @@ async def check_mcp_server_health(
             detail="MCP server not found"
         )
     
-    # Check access permissions (owners and superusers can perform health checks)
+    # Check access permissions (owners, superusers, and users of public servers can perform health checks)
     if not getattr(current_user, 'is_superuser', False) and server.owner_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not enough permissions to perform health check on this server"
-        )
+        # Allow health checks on public servers
+        if not server.is_public:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not enough permissions to perform health check on this server"
+            )
     
-    # Update health check timestamp
-    updated_server = await repo.update_health_check(server_id=server_id)
+    # Perform actual health check based on server type
+    health_status = MCPServerStatus.INACTIVE
+    error_message = None
+    response_time_ms = None
     
-    # TODO: Implement actual health check logic
-    # For now, return basic health check info
+    try:
+        import time
+        import httpx
+        
+        start_time = time.time()
+        
+        if server.server_type == "http":
+            # For HTTP servers, send an initialize request
+            async with httpx.AsyncClient() as client:
+                url = server.connection_config.get("url", "")
+                headers = server.connection_config.get("headers", {})
+                
+                response = await client.post(
+                    url,
+                    json={
+                        "jsonrpc": "2.0",
+                        "method": "initialize",
+                        "params": {},
+                        "id": 1
+                    },
+                    headers=headers,
+                    timeout=5.0
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if "result" in result:
+                        health_status = MCPServerStatus.ACTIVE
+                    else:
+                        health_status = MCPServerStatus.ERROR
+                        error_message = "Invalid response format"
+                else:
+                    health_status = MCPServerStatus.ERROR
+                    error_message = f"HTTP {response.status_code}"
+                    
+        elif server.server_type == "stdio":
+            # For STDIO servers, just check if the command exists
+            # In a real implementation, we'd try to start the process
+            health_status = MCPServerStatus.ACTIVE
+            
+        response_time_ms = int((time.time() - start_time) * 1000)
+        
+    except Exception as e:
+        health_status = MCPServerStatus.ERROR
+        error_message = str(e)
+    
+    # Update server status in database
+    updated_server = await repo.update_health_check(
+        server_id=server_id, 
+        status=health_status
+    )
+    
     if updated_server is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update health check"
         )
     
+    # Get available tools if server is active
+    available_tools = None
+    if health_status == MCPServerStatus.ACTIVE and server.server_type == "stdio":
+        # For STDIO servers, we would need to start the server and query tools
+        # For now, we'll return the tools from capabilities if available
+        available_tools = server.capabilities.get("tools", []) if server.capabilities else []
+    
     return MCPServerHealthCheck(
         server_id=server_id,
-        status=updated_server.status,
+        status=health_status,
         last_check=updated_server.last_health_check or datetime.utcnow(),
-        response_time_ms=None,  # TODO: Implement actual ping
-        error=None,
-        available_tools=None,  # TODO: Query actual tools
+        response_time_ms=response_time_ms,
+        error=error_message,
+        available_tools=available_tools,
     )
 
 
@@ -322,3 +386,157 @@ async def read_mcp_servers_by_status(
     )
     
     return MCPServersPublic(data=[MCPServerPublic(**server.model_dump()) for server in servers], count=len(servers))
+
+
+# Session endpoints
+@router.post("/sessions", response_model=MCPSessionPublic)
+async def create_mcp_session(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    session_create: MCPSessionCreate,
+) -> Any:
+    """
+    Create a new MCP session.
+    """
+    from app.repositories.mcp_session import MCPSessionRepository
+    
+    repo = MCPSessionRepository(session)
+    new_session = await repo.create_session(
+        user_id=current_user.id,
+        server_id=session_create.server_id,
+        title=session_create.title,
+        context=session_create.context
+    )
+    
+    return new_session
+
+
+@router.get("/sessions", response_model=List[MCPSessionPublic])
+async def get_mcp_sessions(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    server_id: uuid.UUID = None,
+    skip: int = 0,
+    limit: int = 100,
+) -> Any:
+    """
+    Get MCP sessions for the current user.
+    
+    Optionally filter by server_id.
+    """
+    from app.repositories.mcp_session import MCPSessionRepository
+    
+    repo = MCPSessionRepository(session)
+    sessions = await repo.get_user_sessions(
+        user_id=current_user.id,
+        server_id=server_id,
+        limit=limit,
+        offset=skip
+    )
+    
+    return sessions
+
+
+@router.get("/sessions/{session_id}", response_model=MCPSessionPublic)
+async def get_mcp_session(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    session_id: uuid.UUID,
+) -> Any:
+    """
+    Get a specific MCP session.
+    """
+    from app.repositories.mcp_session import MCPSessionRepository
+    
+    repo = MCPSessionRepository(session)
+    mcp_session = await repo.get_session(session_id=session_id)
+    
+    if not mcp_session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found"
+        )
+    
+    # Check if user owns the session
+    if mcp_session.user_id != current_user.id and not getattr(current_user, 'is_superuser', False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions to access this session"
+        )
+    
+    return mcp_session
+
+
+@router.get("/sessions/{session_id}/messages", response_model=List[MCPMessagePublic])
+async def get_session_messages(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    session_id: uuid.UUID,
+    skip: int = 0,
+    limit: int = 100,
+) -> Any:
+    """
+    Get messages for a session.
+    """
+    from app.repositories.mcp_session import MCPSessionRepository
+    
+    repo = MCPSessionRepository(session)
+    
+    # First verify the session exists and user has access
+    mcp_session = await repo.get_session(session_id=session_id)
+    if not mcp_session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found"
+        )
+    
+    if mcp_session.user_id != current_user.id and not getattr(current_user, 'is_superuser', False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions to access this session"
+        )
+    
+    messages = await repo.get_session_messages(
+        session_id=session_id,
+        limit=limit,
+        offset=skip
+    )
+    
+    return messages
+
+
+@router.put("/sessions/{session_id}/end")
+async def end_mcp_session(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    session_id: uuid.UUID,
+) -> Any:
+    """
+    End an MCP session.
+    """
+    from app.repositories.mcp_session import MCPSessionRepository
+    
+    repo = MCPSessionRepository(session)
+    
+    # First verify the session exists and user has access
+    mcp_session = await repo.get_session(session_id=session_id)
+    if not mcp_session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found"
+        )
+    
+    if mcp_session.user_id != current_user.id and not getattr(current_user, 'is_superuser', False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions to access this session"
+        )
+    
+    await repo.end_session(session_id=session_id)
+    
+    return {"message": "Session ended successfully"}

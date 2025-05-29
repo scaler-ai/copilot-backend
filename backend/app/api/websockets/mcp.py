@@ -9,6 +9,7 @@ This module implements WebSocket connections for:
 
 import asyncio
 import json
+import os
 import uuid
 from datetime import datetime
 from typing import Dict, Optional, Any
@@ -76,12 +77,21 @@ class ConnectionManager:
             args = connection_config.get("args", [])
             env = connection_config.get("env", {})
             
+            # Handle command as string or list
+            if isinstance(command, str):
+                command = [command]
+            if isinstance(args, str):
+                args = [args]
+            
             if not command:
                 logger.error(f"No command specified for MCP server: {server_id}")
                 return False
             
             # Log the command being executed
-            logger.info(f"Starting MCP server with command: {command + args}")
+            logger.info(f"Starting MCP server {server_id}")
+            logger.info(f"Command: {command}")
+            logger.info(f"Args: {args}")
+            logger.info(f"Full command: {command + args}")
             
             # Start the MCP server process
             process = await asyncio.create_subprocess_exec(
@@ -90,19 +100,36 @@ class ConnectionManager:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env={**env}
+                env={**os.environ, **env}  # Include current environment
             )
+            
+            # Check if process started successfully
+            try:
+                # Wait a bit to see if process exits immediately
+                await asyncio.wait_for(process.wait(), timeout=0.5)
+                # If we get here, process exited
+                stderr = await process.stderr.read()
+                logger.error(f"MCP server {server_id} exited immediately")
+                logger.error(f"Exit code: {process.returncode}")
+                logger.error(f"Stderr: {stderr.decode()}")
+                return False
+            except asyncio.TimeoutError:
+                # Process is still running, which is good
+                pass
             
             self.mcp_processes[server_id] = {
                 "process": process,
                 "started_at": datetime.utcnow()
             }
             
-            logger.info(f"Started MCP server: {server_id}")
+            logger.info(f"Started MCP server successfully: {server_id}")
             return True
             
         except Exception as e:
             logger.error(f"Failed to start MCP server {server_id}: {str(e)}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
     
     async def stop_mcp_server(self, server_id: str):
@@ -160,14 +187,20 @@ async def websocket_endpoint(
     - Message routing between client and MCP server
     - Session and message persistence
     """
+    logger.info(f"WebSocket endpoint called - server_id: {server_id}, session_id: {session_id}")
+    logger.info(f"Token present: {bool(token)}")
+    
     # Authenticate user from WebSocket
     try:
         user = await get_current_user_ws(websocket, db, token)
         if not user:
+            logger.error("No user returned from authentication")
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
+        logger.info(f"User authenticated: {user.email}")
     except Exception as e:
         logger.error(f"WebSocket auth failed: {str(e)}")
+        logger.error(f"Auth exception type: {type(e).__name__}")
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     
@@ -215,54 +248,190 @@ async def websocket_endpoint(
             }
         })
         
+        # Initialize the MCP server and get tools
+        logger.info("Initializing MCP server...")
+        
+        # Send initialize request
+        init_response = await manager.send_to_mcp_server(
+            str(server.id),
+            {
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "Copilot MCP Host",
+                        "version": "1.0.0"
+                    }
+                },
+                "id": 1
+            }
+        )
+        
+        if init_response:
+            logger.info(f"MCP server initialized: {init_response}")
+            
+            # Request available tools
+            tools_response = await manager.send_to_mcp_server(
+                str(server.id),
+                {
+                    "jsonrpc": "2.0",
+                    "method": "tools/list",
+                    "params": {},
+                    "id": 2
+                }
+            )
+            
+            if tools_response and tools_response.get("result"):
+                tools = tools_response["result"].get("tools", [])
+                logger.info(f"Available tools: {tools}")
+                
+                # Send tools to frontend
+                await websocket.send_json({
+                    "type": "tools_available",
+                    "tools": tools
+                })
+                
+                # Update server capabilities in database with available tools
+                try:
+                    # Update the server's capabilities to include tools
+                    updated_capabilities = server.capabilities or {}
+                    updated_capabilities["tools"] = tools
+                    
+                    await repo.update(
+                        server_id=server.id,
+                        server_update={"capabilities": updated_capabilities}
+                    )
+                    logger.info(f"Updated server capabilities with {len(tools)} tools")
+                except Exception as e:
+                    logger.error(f"Failed to update server capabilities: {str(e)}")
+        else:
+            logger.error("Failed to initialize MCP server")
+        
         # Message handling loop
         while True:
             # Receive message from client
             data = await websocket.receive_json()
+            logger.info(f"Received WebSocket message: {data}")
             
-            # Validate message format
+            # Handle different message types based on jsonrpc method
+            method = data.get("method")
+            params = data.get("params", {})
+            msg_id = data.get("id")
+            
             try:
-                message = MCPWebSocketMessage(**data)
-            except Exception as e:
-                await websocket.send_json({
-                    "type": "error",
-                    "error": {"message": f"Invalid message format: {str(e)}"}
-                })
-                continue
-            
-            # Handle different message types
-            if message.type == "request":
-                # Forward request to MCP server
-                mcp_response = await manager.send_to_mcp_server(
-                    str(server.id), 
-                    message.model_dump()
-                )
+                if method == "sampling/createMessage":
+                    # This is a user message from the frontend
+                    messages = params.get("messages", [])
+                    if messages:
+                        user_message = messages[0]  # Get the user message
+                        content = user_message.get("content", {})
+                        text = content.get("text", "") if isinstance(content, dict) else str(content)
+                        
+                        # Save user message to database
+                        from app.repositories.mcp_session import MCPSessionRepository
+                        session_repo = MCPSessionRepository(db)
+                        
+                        saved_message = await session_repo.add_message(
+                            session_id=uuid.UUID(session_id),
+                            role=MCPMessageRole.USER,
+                            content=text
+                        )
+                        logger.info(f"Saved user message to database: {saved_message.id}")
+                        
+                        # Send confirmation that user message was saved
+                        await websocket.send_json({
+                            "type": "message_saved",
+                            "message": {
+                                "id": str(saved_message.id),
+                                "session_id": str(saved_message.session_id),
+                                "role": saved_message.role,
+                                "content": saved_message.content,
+                                "created_at": saved_message.created_at.isoformat()
+                            }
+                        })
+                        
+                        # Forward to MCP server
+                        mcp_response = await manager.send_to_mcp_server(
+                            str(server.id), 
+                            data
+                        )
+                        
+                        if mcp_response:
+                            logger.info(f"Got MCP response: {mcp_response}")
+                            
+                            # Save assistant response to database
+                            if mcp_response.get("result", {}).get("content"):
+                                content_items = mcp_response["result"]["content"]
+                                assistant_text = content_items[0].get("text", "") if content_items else ""
+                                
+                                saved_response = await session_repo.add_message(
+                                    session_id=uuid.UUID(session_id),
+                                    role=MCPMessageRole.ASSISTANT,
+                                    content=assistant_text
+                                )
+                                logger.info(f"Saved assistant message to database: {saved_response.id}")
+                                
+                                # Send assistant message confirmation
+                                await websocket.send_json({
+                                    "type": "message_saved",
+                                    "message": {
+                                        "id": str(saved_response.id),
+                                        "session_id": str(saved_response.session_id),
+                                        "role": saved_response.role,
+                                        "content": saved_response.content,
+                                        "created_at": saved_response.created_at.isoformat()
+                                    }
+                                })
+                            
+                            # Send MCP response back to client
+                            await websocket.send_json(mcp_response)
+                        else:
+                            await websocket.send_json({
+                                "jsonrpc": "2.0",
+                                "id": msg_id,
+                                "error": {"message": "No response from MCP server"}
+                            })
                 
-                if mcp_response:
-                    # Send response back to client
-                    await websocket.send_json(mcp_response)
+                elif method == "initialize":
+                    # Forward initialization to MCP server
+                    mcp_response = await manager.send_to_mcp_server(
+                        str(server.id), 
+                        data
+                    )
                     
-                    # TODO: Store message and response in database
-                else:
-                    await websocket.send_json({
-                        "type": "error",
-                        "id": message.id,
-                        "error": {"message": "No response from MCP server"}
-                    })
-            
-            elif message.type == "notification":
-                # Handle notifications (no response expected)
-                await manager.send_to_mcp_server(
-                    str(server.id),
-                    message.model_dump()
-                )
+                    if mcp_response:
+                        await websocket.send_json(mcp_response)
+                    else:
+                        await websocket.send_json({
+                            "jsonrpc": "2.0",
+                            "id": msg_id,
+                            "error": {"message": "Failed to initialize MCP server"}
+                        })
                 
-                # TODO: Store notification in database
-            
-            else:
+                else:
+                    # Forward other messages to MCP server
+                    mcp_response = await manager.send_to_mcp_server(
+                        str(server.id),
+                        data
+                    )
+                    
+                    if mcp_response:
+                        await websocket.send_json(mcp_response)
+                    else:
+                        await websocket.send_json({
+                            "jsonrpc": "2.0",
+                            "id": msg_id,
+                            "error": {"message": "No response from MCP server"}
+                        })
+                        
+            except Exception as e:
+                logger.error(f"Error processing WebSocket message: {str(e)}")
                 await websocket.send_json({
-                    "type": "error",
-                    "error": {"message": f"Unknown message type: {message.type}"}
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "error": {"message": f"Internal error: {str(e)}"}
                 })
     
     except WebSocketDisconnect:

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import items, login, mcp, private, users, utils
+from app.api.routes import items, login, mcp, mcp_ws, private, users, utils
 from app.api.routes.auth.router import router as auth_router
 from app.core.config import settings
 
@@ -15,6 +15,7 @@ api_router.include_router(users.router, prefix="/users", tags=["users"])
 api_router.include_router(utils.router, prefix="/utils", tags=["utils"])
 api_router.include_router(items.router, prefix="/items", tags=["items"])
 api_router.include_router(mcp.router, tags=["mcp"])
+api_router.include_router(mcp_ws.router, tags=["mcp"])
 
 # Include private routes in local environment
 if settings.ENVIRONMENT == "local":
