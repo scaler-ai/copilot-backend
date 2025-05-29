@@ -127,6 +127,48 @@ class MCPSessionRepository:
         finally:
             await conn.close()
     
+    async def archive_session(
+        self,
+        *,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID
+    ) -> bool:
+        """Archive a session."""
+        conn = await self._get_connection()
+        try:
+            now = datetime.utcnow()
+            result = await conn.execute("""
+                UPDATE mcp_sessions 
+                SET archived = true, archived_at = $1, updated_at = $1
+                WHERE id = $2 AND user_id = $3 AND archived = false
+            """, now, session_id, user_id)
+            
+            return result.split()[-1] == '1'
+            
+        finally:
+            await conn.close()
+    
+    async def unarchive_session(
+        self,
+        *,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID
+    ) -> bool:
+        """Unarchive a session."""
+        conn = await self._get_connection()
+        try:
+            now = datetime.utcnow()
+            result = await conn.execute("""
+                UPDATE mcp_sessions 
+                SET archived = false, archived_at = NULL, updated_at = $1
+                WHERE id = $2 AND user_id = $3 AND archived = true
+            """, now, session_id, user_id)
+            
+            return result.split()[-1] == '1'
+            
+        finally:
+            await conn.close()
+    
     async def add_message(
         self,
         *,
@@ -197,6 +239,7 @@ class MCPSessionRepository:
         user_id: uuid.UUID,
         server_id: Optional[uuid.UUID] = None,
         status: Optional[MCPSessionStatus] = None,
+        archived: Optional[bool] = False,
         limit: int = 100,
         offset: int = 0
     ) -> List[MCPSessionPublic]:
@@ -217,6 +260,11 @@ class MCPSessionRepository:
                 query += f" AND status = ${param_idx}"
                 params.append(status.value)
                 param_idx += 1
+            
+            # Add archived filter
+            query += f" AND archived = ${param_idx}"
+            params.append(archived)
+            param_idx += 1
             
             query += f" ORDER BY created_at DESC LIMIT ${param_idx} OFFSET ${param_idx + 1}"
             params.extend([limit, offset])

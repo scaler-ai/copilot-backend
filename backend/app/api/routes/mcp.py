@@ -418,13 +418,14 @@ async def get_mcp_sessions(
     session: SessionDep,
     current_user: CurrentUser,
     server_id: uuid.UUID = None,
+    archived: bool = False,
     skip: int = 0,
     limit: int = 100,
 ) -> Any:
     """
     Get MCP sessions for the current user.
     
-    Optionally filter by server_id.
+    Optionally filter by server_id and archived status.
     """
     from app.repositories.mcp_session import MCPSessionRepository
     
@@ -432,6 +433,7 @@ async def get_mcp_sessions(
     sessions = await repo.get_user_sessions(
         user_id=current_user.id,
         server_id=server_id,
+        archived=archived,
         limit=limit,
         offset=skip
     )
@@ -540,3 +542,81 @@ async def end_mcp_session(
     await repo.end_session(session_id=session_id)
     
     return {"message": "Session ended successfully"}
+
+
+@router.put("/sessions/{session_id}/archive")
+async def archive_mcp_session(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    session_id: uuid.UUID,
+) -> Any:
+    """
+    Archive an MCP session.
+    """
+    from app.repositories.mcp_session import MCPSessionRepository
+    
+    repo = MCPSessionRepository(session)
+    
+    # First verify the session exists and user has access
+    mcp_session = await repo.get_session(session_id=session_id)
+    if not mcp_session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found"
+        )
+    
+    if mcp_session.user_id != current_user.id and not getattr(current_user, 'is_superuser', False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions to archive this session"
+        )
+    
+    success = await repo.archive_session(session_id=session_id, user_id=current_user.id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to archive session. It may already be archived."
+        )
+    
+    return {"message": "Session archived successfully"}
+
+
+@router.put("/sessions/{session_id}/unarchive")
+async def unarchive_mcp_session(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    session_id: uuid.UUID,
+) -> Any:
+    """
+    Unarchive an MCP session.
+    """
+    from app.repositories.mcp_session import MCPSessionRepository
+    
+    repo = MCPSessionRepository(session)
+    
+    # First verify the session exists and user has access
+    mcp_session = await repo.get_session(session_id=session_id)
+    if not mcp_session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found"
+        )
+    
+    if mcp_session.user_id != current_user.id and not getattr(current_user, 'is_superuser', False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions to unarchive this session"
+        )
+    
+    success = await repo.unarchive_session(session_id=session_id, user_id=current_user.id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to unarchive session. It may not be archived."
+        )
+    
+    return {"message": "Session unarchived successfully"}

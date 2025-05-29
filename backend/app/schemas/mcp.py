@@ -106,6 +106,13 @@ class MCPServersPublic(BaseModel):
 
 
 # MCP Tool Schemas
+class MCPTool(BaseModel):
+    """Schema for MCP Tool definition (from server)"""
+    name: str
+    description: Optional[str] = None
+    inputSchema: Optional[Dict[str, Any]] = None
+
+
 class MCPToolBase(BaseModel):
     """Base schema for MCP Tool"""
     name: str = Field(..., max_length=255)
@@ -154,6 +161,7 @@ class MCPSessionUpdate(BaseModel):
     status: Optional[MCPSessionStatus] = None
     context: Optional[Dict[str, Any]] = None
     metadata: Optional[Dict[str, Any]] = None
+    archived: Optional[bool] = None
 
 
 class MCPSessionPublic(MCPSessionBase):
@@ -164,6 +172,8 @@ class MCPSessionPublic(MCPSessionBase):
     started_at: datetime
     ended_at: Optional[datetime] = None
     last_activity: datetime
+    archived: bool = False
+    archived_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

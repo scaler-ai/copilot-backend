@@ -352,19 +352,95 @@ async def websocket_endpoint(
                             }
                         })
                         
-                        # Forward to MCP server
-                        mcp_response = await manager.send_to_mcp_server(
-                            str(server.id), 
-                            data
+                        # Use LLM to analyze message and determine tool usage
+                        from app.services.llm_service import llm_service
+                        
+                        # Get available tools from server capabilities
+                        available_tools = server.capabilities.get("tools", []) if server.capabilities else []
+                        
+                        # Let LLM decide if tools should be called
+                        llm_decision = await llm_service.process_message_with_tools(
+                            message=text,
+                            available_tools=available_tools
                         )
                         
-                        if mcp_response:
-                            logger.info(f"Got MCP response: {mcp_response}")
+                        logger.info(f"LLM decision: {llm_decision}")
+                        
+                        if llm_decision["should_call_tools"] and llm_decision["tool_calls"]:
+                            # Execute tool calls
+                            tool_results = []
                             
-                            # Save assistant response to database
-                            if mcp_response.get("result", {}).get("content"):
-                                content_items = mcp_response["result"]["content"]
-                                assistant_text = content_items[0].get("text", "") if content_items else ""
+                            for tool_call in llm_decision["tool_calls"]:
+                                logger.info(f"Calling tool: {tool_call['name']} with args: {tool_call['arguments']}")
+                                
+                                # Send tool call to MCP server
+                                tool_response = await manager.send_to_mcp_server(
+                                    str(server.id),
+                                    {
+                                        "jsonrpc": "2.0",
+                                        "method": "tools/call",
+                                        "params": {
+                                            "name": tool_call["name"],
+                                            "arguments": tool_call["arguments"]
+                                        },
+                                        "id": tool_call["id"]
+                                    }
+                                )
+                                
+                                if tool_response:
+                                    tool_results.append(tool_response.get("result", {}))
+                                else:
+                                    tool_results.append({"error": "Tool call failed"})
+                            
+                            # Format tool results into a response
+                            formatted_response = await llm_service.format_tool_results(
+                                original_message=text,
+                                tool_calls=llm_decision["tool_calls"],
+                                tool_results=tool_results
+                            )
+                            
+                            # Save assistant response with tool information
+                            saved_response = await session_repo.add_message(
+                                session_id=uuid.UUID(session_id),
+                                role=MCPMessageRole.ASSISTANT,
+                                content=formatted_response,
+                                metadata={
+                                    "tool_calls": llm_decision["tool_calls"],
+                                    "tool_results": tool_results
+                                }
+                            )
+                            
+                            # Send response to frontend
+                            await websocket.send_json({
+                                "type": "message_saved",
+                                "message": {
+                                    "id": str(saved_response.id),
+                                    "session_id": str(saved_response.session_id),
+                                    "role": saved_response.role,
+                                    "content": saved_response.content,
+                                    "created_at": saved_response.created_at.isoformat(),
+                                    "tool_calls": llm_decision["tool_calls"]
+                                }
+                            })
+                            
+                        else:
+                            # No tools needed, forward to MCP server for regular response
+                            mcp_response = await manager.send_to_mcp_server(
+                                str(server.id), 
+                                data
+                            )
+                            
+                            if mcp_response:
+                                logger.info(f"Got MCP response: {mcp_response}")
+                                
+                                # Use suggested response from LLM if available
+                                if llm_decision.get("suggested_response"):
+                                    assistant_text = llm_decision["suggested_response"]
+                                elif mcp_response.get("result", {}).get("content"):
+                                    content_items = mcp_response["result"]["content"]
+                                    assistant_text = content_items[0].get("text", "") if content_items else ""
+                                else:
+                                    assistant_text = "I'm not sure how to respond to that."
                                 
                                 saved_response = await session_repo.add_message(
                                     session_id=uuid.UUID(session_id),
@@ -384,15 +460,12 @@ async def websocket_endpoint(
                                         "created_at": saved_response.created_at.isoformat()
                                     }
                                 })
-                            
-                            # Send MCP response back to client
-                            await websocket.send_json(mcp_response)
-                        else:
-                            await websocket.send_json({
-                                "jsonrpc": "2.0",
-                                "id": msg_id,
-                                "error": {"message": "No response from MCP server"}
-                            })
+                            else:
+                                await websocket.send_json({
+                                    "jsonrpc": "2.0",
+                                    "id": msg_id,
+                                    "error": {"message": "No response from MCP server"}
+                                })
                 
                 elif method == "initialize":
                     # Forward initialization to MCP server
