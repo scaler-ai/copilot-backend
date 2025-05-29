@@ -469,8 +469,33 @@ async def websocket_endpoint(
                         # Use LLM to analyze message and determine tool usage
                         from app.services.llm_service import llm_service
                         
-                        # Get available tools from server capabilities
-                        available_tools = server.capabilities.get("tools", []) if server.capabilities else []
+                        # Get available tools - fetch live tools from the server
+                        available_tools = []
+                        try:
+                            # Get tools from the running MCP server
+                            tools_response = await manager.send_to_mcp_server(
+                                str(server.id),
+                                {
+                                    "jsonrpc": "2.0",
+                                    "method": "tools/list",
+                                    "params": {},
+                                    "id": f"tools_list_{uuid.uuid4()}"
+                                }
+                            )
+                            
+                            if tools_response and tools_response.get("result"):
+                                available_tools = tools_response["result"].get("tools", [])
+                                logger.info(f"Retrieved {len(available_tools)} tools from MCP server: {[tool.get('name') for tool in available_tools]}")
+                            else:
+                                logger.warning(f"No tools response from MCP server: {tools_response}")
+                                # Fallback to stored capabilities
+                                available_tools = server.capabilities.get("tools", []) if server.capabilities else []
+                        except Exception as e:
+                            logger.error(f"Error fetching tools from MCP server: {str(e)}")
+                            # Fallback to stored capabilities
+                            available_tools = server.capabilities.get("tools", []) if server.capabilities else []
+                        
+                        logger.info(f"Available tools for LLM: {available_tools}")
                         
                         # Let LLM decide if tools should be called
                         llm_decision = await llm_service.process_message_with_tools(
