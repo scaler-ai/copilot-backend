@@ -6,6 +6,20 @@ This document tracks the development of the browser-based MCP (Model Context Pro
 
 ## Status: Phase 4 Complete ✅
 
+### Current State (May 30, 2025)
+
+**Working Components:**
+- ✅ Backend API running at http://localhost:8000
+- ✅ Calculator MCP server (STDIO) - Python process
+- ✅ HTTP test MCP server running on port 8080
+- ✅ WebSocket endpoint functional at `/api/v1/mcp/ws/mcp/{server_id}/{session_id}`
+- ✅ Test client available at `/api/v1/mcp/test` (development mode only)
+
+**Known Issues:**
+- MCP servers need to be registered in the database for WebSocket connections
+- Authentication required for API endpoints (JWT token)
+- Frontend integration pending
+
 ### Phase 1: Database Schema (Completed)
 
 **Schema-First Approach:**

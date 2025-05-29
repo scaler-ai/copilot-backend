@@ -4,7 +4,7 @@ Repository for MCP Session database operations.
 
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 
 import asyncpg
@@ -50,7 +50,7 @@ class MCPSessionRepository:
         conn = await self._get_connection()
         try:
             session_id = uuid.uuid4()
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             
             await conn.execute("""
                 INSERT INTO mcp_sessions (
@@ -117,7 +117,7 @@ class MCPSessionRepository:
         """End a session with the given status."""
         conn = await self._get_connection()
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             await conn.execute("""
                 UPDATE mcp_sessions 
                 SET status = $1, ended_at = $2, updated_at = $3
@@ -136,7 +136,7 @@ class MCPSessionRepository:
         """Archive a session."""
         conn = await self._get_connection()
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             result = await conn.execute("""
                 UPDATE mcp_sessions 
                 SET archived = true, archived_at = $1, updated_at = $1
@@ -157,7 +157,7 @@ class MCPSessionRepository:
         """Unarchive a session."""
         conn = await self._get_connection()
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             result = await conn.execute("""
                 UPDATE mcp_sessions 
                 SET archived = false, archived_at = NULL, updated_at = $1
@@ -183,7 +183,7 @@ class MCPSessionRepository:
         conn = await self._get_connection()
         try:
             message_id = uuid.uuid4()
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             
             await conn.execute("""
                 INSERT INTO mcp_messages (

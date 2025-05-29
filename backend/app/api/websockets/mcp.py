@@ -606,6 +606,14 @@ async def websocket_endpoint(
                                     "error": {"message": "No response from MCP server"}
                                 })
                 
+                elif method == "ping":
+                    # Handle heartbeat ping
+                    await websocket.send_json({
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
+                        "result": "pong"
+                    })
+                
                 elif method == "initialize":
                     # Forward initialization to MCP server
                     mcp_response = await manager.send_to_mcp_server(

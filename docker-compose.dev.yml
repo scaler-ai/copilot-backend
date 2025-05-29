@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:17
+    restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+      timeout: 10s
+    volumes:
+      - app-db-data:/var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    environment:
+      - PGDATA=/var/lib/postgresql/data/pgdata
+      - POSTGRES_PASSWORD=changethis
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=app
+
+  backend:
+    build:
+      context: ./backend
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    command: ["bash", "-c", "cd /app && . .venv/bin/activate && python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"]
+    environment:
+      - POSTGRES_SERVER=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=app
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=changethis
+      - SECRET_KEY=changethis
+      - FIRST_SUPERUSER=admin@example.com
+      - FIRST_SUPERUSER_PASSWORD=changethis
+      - ENVIRONMENT=local
+      - BACKEND_CORS_ORIGINS=http://localhost,http://localhost:3000,http://localhost:5173,https://localhost,https://localhost:5173
+    volumes:
+      - ./backend:/app
+
+volumes:
+  app-db-data:
